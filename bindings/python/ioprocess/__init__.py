@@ -3,7 +3,7 @@ import os
 from select import poll, \
     POLLERR, POLLHUP, POLLPRI, POLLOUT, POLLIN, POLLWRBAND, \
     error
-from threading import Thread, Event, Lock
+from threading import Thread, Event, Lock, current_thread
 import fcntl
 import json
 from struct import Struct
@@ -20,6 +20,11 @@ try:
 except ImportError:
     cpopen = None
     import subprocess
+
+try:
+    from vdsm import pthread
+except ImportError:
+    pthread = None
 
 import six
 Queue = six.moves.queue.Queue
@@ -194,7 +199,7 @@ def _communicate(ioproc_ref, proc, readPipe, writePipe):
         if USE_ZOMBIE_REAPER and zombiereaper is not None:
             zombiereaper.autoRipPID(proc.pid)
         else:
-            start_thread(proc.wait, name="ioprocess wait() thread")
+            start_thread(proc.wait, name="wait/%d" % proc.pid)
 
         real_ioproc = ioproc_ref()
         if real_ioproc is not None:
@@ -390,7 +395,7 @@ class IOProcess(object):
         self._commthread = start_thread(
             _communicate,
             args,
-            name="ioprocess communication (%d)" % (proc.pid,),
+            name="ioprocess/%d" % (proc.pid,),
         )
 
         if self._started.wait(1):
@@ -604,7 +609,17 @@ class IOProcess(object):
 
 
 def start_thread(func, args=(), name=None, daemon=True):
-    t = Thread(target=func, args=args, name=name)
+
+    def run():
+        try:
+            if pthread:
+                thread_name = current_thread().name
+                pthread.setname(thread_name[:15])
+            return func(*args)
+        except Exception:
+            logging.exception("Unhandled exception in thread")
+
+    t = Thread(target=run, name=name)
     t.daemon = daemon
     t.start()
     return t
